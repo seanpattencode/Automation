@@ -1,6 +1,6 @@
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
-import os, sys, time, subprocess
+import os, sys, time, subprocess, shutil, tempfile
 
 ud = (
     os.path.expanduser("~/Library/Application Support/Google/Chrome Beta") if sys.platform == "darwin" else
@@ -12,9 +12,27 @@ ud = (
 subprocess.run(["pkill", "-9", "-f", "chrome-beta"], stderr=subprocess.DEVNULL)
 time.sleep(1)
 
-print("Launching browser...")
+# Create temp directory with profile copy
+print("Copying profile to temp directory...")
+temp_profile = os.path.join(tempfile.gettempdir(), "chrome-beta-profile")
+if os.path.exists(temp_profile):
+    shutil.rmtree(temp_profile, ignore_errors=True)
+
+# Copy critical profile data (Default directory with cookies, history, etc.)
+os.makedirs(temp_profile, exist_ok=True)
+default_dir = os.path.join(ud, "Default")
+if os.path.exists(default_dir):
+    shutil.copytree(default_dir, os.path.join(temp_profile, "Default"), dirs_exist_ok=True)
+
+# Copy Local State (preferences)
+local_state = os.path.join(ud, "Local State")
+if os.path.exists(local_state):
+    shutil.copy2(local_state, temp_profile)
+
+print("Launching browser with profile...")
 with sync_playwright() as p:
-    browser = p.chromium.launch(
+    ctx = p.chromium.launch_persistent_context(
+        temp_profile,
         channel="chrome-beta",
         headless=False,
         args=[
@@ -22,21 +40,30 @@ with sync_playwright() as p:
             "--enable-features=UseOzonePlatform",
             "--ozone-platform=wayland",
         ],
+        ignore_default_args=["--enable-automation"],
     )
-    print("Browser launched, creating context...")
-    ctx = browser.new_context()
+
     page = ctx.new_page()
+
     print("Applying stealth...")
     stealth = Stealth()
     stealth.apply_stealth_sync(page)
+
+    print("Navigating to pixai.art...")
     try:
         page.goto("https://pixai.art/", wait_until="domcontentloaded", timeout=60000)
         print(f"Navigated to https://pixai.art/")
     except Exception as e:
         print(f"Navigation error: {e}")
-    print("Browser ready. Ctrl+C to exit.")
+
+    print(f"Using copied profile from: {ud}. Ctrl+C to exit.")
     try:
         while True: time.sleep(3600)
     except KeyboardInterrupt:
         pass
-    browser.close()
+
+    ctx.close()
+
+# Clean up
+print("Cleaning up temp profile...")
+shutil.rmtree(temp_profile, ignore_errors=True)
